@@ -1,0 +1,213 @@
+//@version=5
+// Order Blocks + Swing Support/Resistance
+//
+// Detects order blocks from displacement moves and plots swing-based S/R levels.
+// Written from the published behaviour of the concept, not from anyone's source.
+//
+// How an order block is defined here:
+//   A bullish OB is the last DOWN candle before an up-move that (a) runs for at
+//   least "OB Confirmation Length" consecutive up candles and (b) closes above
+//   that down candle's high. The zone is that candle's range (or body).
+//   Bearish is the exact mirror. A zone dies once price trades back through it.
+//
+// Swing S/R: confirmed pivot highs/lows using "Swing Lookback" bars either side.
+// A level is dropped once price closes through it, which keeps the chart clean.
+
+indicator("Order Blocks + Swing S/R", overlay = true,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ─────────────────────────────── Inputs ──────────────────────────────────────
+gOB  = "Order Blocks"
+gSR  = "Swing Support / Resistance"
+gVis = "Appearance"
+
+obConfirm  = input.int(3, "OB Confirmation Length", minval = 1, maxval = 20, group = gOB,
+     tooltip = "Consecutive candles of follow-through required before an impulse counts as real. Higher = fewer, stronger zones.")
+obUseBody  = input.bool(false, "Zone from candle body only", group = gOB,
+     tooltip = "Off = wick to wick (wider zone). On = open to close.")
+obMaxCount = input.int(5, "Max zones kept per side", minval = 1, maxval = 20, group = gOB)
+obMitigate = input.string("Wick", "Zone is mitigated on", options = ["Wick", "Close"], group = gOB,
+     tooltip = "Wick = any trade back through the zone kills it. Close = it survives until a candle closes through.")
+obKeepMit  = input.bool(false, "Keep mitigated zones (greyed out)", group = gOB)
+
+swingLB    = input.int(10, "Swing Lookback", minval = 1, maxval = 100, group = gSR,
+     tooltip = "Bars either side of a pivot. Higher = fewer, more significant levels.")
+srMaxCount = input.int(3, "Max levels kept per side", minval = 1, maxval = 10, group = gSR)
+srShowLbl  = input.bool(true, "Show price on levels", group = gSR)
+
+bullCol    = input.color(color.new(color.teal, 80), "Bullish zone", group = gVis)
+bearCol    = input.color(color.new(color.red,  80), "Bearish zone", group = gVis)
+supCol     = input.color(color.teal, "Support", group = gVis)
+resCol     = input.color(color.red,  "Resistance", group = gVis)
+
+// ───────────────────────────── Order blocks ──────────────────────────────────
+var box[] bullBoxes = array.new_box()
+var box[] bearBoxes = array.new_box()
+
+// Candidate candles: the last down candle (source of a bullish OB) and the last
+// up candle (source of a bearish OB), plus a used flag so each fires only once.
+var int   dnIdx  = na
+var float dnTop  = na
+var float dnBot  = na
+var bool  dnUsed = true
+var int   upIdx  = na
+var float upTop  = na
+var float upBot  = na
+var bool  upUsed = true
+
+var int upRun = 0
+var int dnRun = 0
+upRun := close > open ? upRun + 1 : 0
+dnRun := close < open ? dnRun + 1 : 0
+
+// Maintain existing zones first, so a zone created this bar is not tested against
+// the very candle that made it.
+bullTouch = false
+bearTouch = false
+
+i = array.size(bullBoxes) - 1
+while i >= 0
+    b   = array.get(bullBoxes, i)
+    bot = box.get_bottom(b)
+    top = box.get_top(b)
+    dead = obMitigate == "Close" ? close < bot : low < bot
+    if dead
+        array.remove(bullBoxes, i)
+        if obKeepMit
+            box.set_bgcolor(b, color.new(color.gray, 88))
+            box.set_border_color(b, color.new(color.gray, 60))
+            box.set_right(b, bar_index)
+        else
+            box.delete(b)
+    else
+        box.set_right(b, bar_index + 1)
+        if low <= top and high >= bot
+            bullTouch := true
+    i -= 1
+
+j = array.size(bearBoxes) - 1
+while j >= 0
+    xb    = array.get(bearBoxes, j)
+    xbot  = box.get_bottom(xb)
+    xtop  = box.get_top(xb)
+    xdead = obMitigate == "Close" ? close > xtop : high > xtop
+    if xdead
+        array.remove(bearBoxes, j)
+        if obKeepMit
+            box.set_bgcolor(xb, color.new(color.gray, 88))
+            box.set_border_color(xb, color.new(color.gray, 60))
+            box.set_right(xb, bar_index)
+        else
+            box.delete(xb)
+    else
+        box.set_right(xb, bar_index + 1)
+        if low <= xtop and high >= xbot
+            bearTouch := true
+    j -= 1
+
+// Track the candidate candles.
+if close < open
+    dnIdx  := bar_index
+    dnTop  := obUseBody ? open  : high
+    dnBot  := obUseBody ? close : low
+    dnUsed := false
+if close > open
+    upIdx  := bar_index
+    upTop  := obUseBody ? close : high
+    upBot  := obUseBody ? open  : low
+    upUsed := false
+
+newBullOB = not dnUsed and not na(dnTop) and upRun >= obConfirm and close > dnTop
+newBearOB = not upUsed and not na(upBot) and dnRun >= obConfirm and close < upBot
+
+if newBullOB
+    dnUsed := true
+    nb = box.new(left = dnIdx, top = dnTop, right = bar_index + 1, bottom = dnBot,
+         xloc = xloc.bar_index, bgcolor = bullCol, border_color = color.new(supCol, 40))
+    array.push(bullBoxes, nb)
+    if array.size(bullBoxes) > obMaxCount
+        box.delete(array.shift(bullBoxes))
+
+if newBearOB
+    upUsed := true
+    nbBear = box.new(left = upIdx, top = upTop, right = bar_index + 1, bottom = upBot,
+         xloc = xloc.bar_index, bgcolor = bearCol, border_color = color.new(resCol, 40))
+    array.push(bearBoxes, nbBear)
+    if array.size(bearBoxes) > obMaxCount
+        box.delete(array.shift(bearBoxes))
+
+// ─────────────────────── Swing support / resistance ──────────────────────────
+var line[]  resLines  = array.new_line()
+var label[] resLabels = array.new_label()
+var line[]  supLines  = array.new_line()
+var label[] supLabels = array.new_label()
+
+ph = ta.pivothigh(swingLB, swingLB)
+pl = ta.pivotlow(swingLB, swingLB)
+
+resBreak = false
+supBreak = false
+
+k = array.size(resLines) - 1
+while k >= 0
+    ln = array.get(resLines, k)
+    lb = array.get(resLabels, k)
+    px = line.get_y1(ln)
+    if close > px
+        line.delete(ln)
+        label.delete(lb)
+        array.remove(resLines, k)
+        array.remove(resLabels, k)
+        resBreak := true
+    else
+        line.set_x2(ln, bar_index + 3)
+        label.set_x(lb, bar_index + 3)
+    k -= 1
+
+m = array.size(supLines) - 1
+while m >= 0
+    sln = array.get(supLines, m)
+    slb = array.get(supLabels, m)
+    spx = line.get_y1(sln)
+    if close < spx
+        line.delete(sln)
+        label.delete(slb)
+        array.remove(supLines, m)
+        array.remove(supLabels, m)
+        supBreak := true
+    else
+        line.set_x2(sln, bar_index + 3)
+        label.set_x(slb, bar_index + 3)
+    m -= 1
+
+if not na(ph)
+    nl = line.new(bar_index - swingLB, ph, bar_index + 3, ph, xloc = xloc.bar_index,
+         color = resCol, width = 1)
+    nt = label.new(bar_index + 3, ph, srShowLbl ? str.tostring(ph, format.mintick) : "",
+         xloc = xloc.bar_index, style = label.style_label_left,
+         color = color.new(color.black, 100), textcolor = resCol, size = size.small)
+    array.push(resLines, nl)
+    array.push(resLabels, nt)
+    if array.size(resLines) > srMaxCount
+        line.delete(array.shift(resLines))
+        label.delete(array.shift(resLabels))
+
+if not na(pl)
+    nlSup = line.new(bar_index - swingLB, pl, bar_index + 3, pl, xloc = xloc.bar_index,
+         color = supCol, width = 1)
+    ntSup = label.new(bar_index + 3, pl, srShowLbl ? str.tostring(pl, format.mintick) : "",
+         xloc = xloc.bar_index, style = label.style_label_left,
+         color = color.new(color.black, 100), textcolor = supCol, size = size.small)
+    array.push(supLines, nlSup)
+    array.push(supLabels, ntSup)
+    if array.size(supLines) > srMaxCount
+        line.delete(array.shift(supLines))
+        label.delete(array.shift(supLabels))
+
+// ─────────────────────────────── Alerts ──────────────────────────────────────
+alertcondition(newBullOB,  "New bullish order block",  "A bullish order block has formed")
+alertcondition(newBearOB,  "New bearish order block",  "A bearish order block has formed")
+alertcondition(bullTouch,  "Price in bullish zone",    "Price is trading inside a bullish order block")
+alertcondition(bearTouch,  "Price in bearish zone",    "Price is trading inside a bearish order block")
+alertcondition(resBreak,   "Resistance broken",        "Price has closed above a swing resistance level")
+alertcondition(supBreak,   "Support broken",           "Price has closed below a swing support level")
